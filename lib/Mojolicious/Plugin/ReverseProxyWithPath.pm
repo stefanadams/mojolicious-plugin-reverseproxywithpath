@@ -1,46 +1,45 @@
 package Mojolicious::Plugin::ReverseProxyWithPath;
 use Mojo::Base 'Mojolicious::Plugin';
 
-use Mojo::File 'curfile';
+use Mojo::File qw(curfile path);
 
 our $VERSION = '0.01';
 
+use constant DEBUG => $ENV{MOJO_REVERSEPROXY_DEBUG} || 0;
+
 sub register {
   my ($self, $app) = @_;
-  # https://mojolicious.io/blog/2019/03/18/reverse-proxy-with-path/
-  #location ~ ^/(?<app>[a-zA-z]+)(?<ruri>.*)$ {
-  #  if ( $ruri = "" ) {
-  #    set $ruri "/";
-  #  }
-  #  proxy_pass http://unix:/var/mojo/unixsockets/$app.$http_host:$ruri$is_args$args;
-  if ( my $path = $ENV{MOJO_REVERSE_PROXY} ) {
-    my @path_parts = grep /\S/, split m/\//, $path;
-    $app->hook(before_dispatch => sub {
-      my $c = shift;
+  $app->helper(base => sub {
+    my $c = shift;
+    $c->tag('base', href => $c->req->url->base, @_);
+  });
+  $app->hook(before_dispatch => sub {
+    my $c = shift;
+    if ( $ENV{MOJO_REVERSE_PROXY} && $ENV{MOJO_REVERSE_PROXY} =~ /^\D/ ) {
+      my $rp = Mojo::URL->new($ENV{MOJO_REVERSE_PROXY});
       my $url = $c->req->url;
       my $base = $url->base;
-      push @{$base->path}, @path_parts;
+      $base->scheme($rp->scheme)->host($rp->host)->port($rp->port)
+        if $rp->scheme && $rp->host_port;
+      push @{$base->path}, grep /\S/, @{$rp->path};
       $base->path->trailing_slash(1);
       $url->path->leading_slash(0);
-    }) if $path =~ /^\//;
-    $app->hook(after_render => sub {
-      my ($c, $output, $format) = @_;
-      my $dom = Mojo::DOM->new($$output);
-      # TODO: return if there's already a shortcut icon in the DOM
-      my $icon = $c->app->mode eq 'production' ? '/favicon.ico' : '/favicon.'.$c->app->mode.'.ico';
-      $icon = $dom->new_tag('link', rel=>"shortcut icon", href=>$c->url_for($icon), type=>"image/x-icon");
-      if ( $dom->at('html > head') ) {
-        $$output = $dom->at('html > head')->child_nodes->first->prepend($icon)->root
-      } elsif ( $dom->at('html') ) {
-        $$output = $dom->at('html')->child_nodes->first->prepend($icon)->root
-      } else {
-        $$output = "$icon\n$$output";
+      $c->req->headers->header('X-Request-Base' => $base->to_abs->to_string);
+      warn "[MOJO_REVERSE_PROXY=$ENV{MOJO_REVERSE_PROXY}] Base: ".$c->req->url->base if DEBUG;
+      warn "[MOJO_REVERSE_PROXY=$ENV{MOJO_REVERSE_PROXY}]  URL: ".$c->req->url if DEBUG;
+    }
+    if ( my $base = $c->req->headers->header('X-Request-Base') ) {
+      my $url = Mojo::URL->new($base);
+      if ( $url->host ) {
+        $c->req->url->base($url);
       }
-    });
-    # Static files
-    my $resources = curfile->sibling('ReverseProxyWithPath', 'resources');
-    push @{$app->static->paths}, $resources->child('public')->to_string;
-  }
+      else {
+        $c->req->url->base->path($url->path);
+      }
+      warn "[X-Request-Base] Base: ".$c->req->url->base if DEBUG;
+      warn "[X-Request-Base]  URL: ".$c->req->url if DEBUG;
+    }
+  });
 }
 
 1;
@@ -61,6 +60,11 @@ Mojolicious::Plugin::ReverseProxyWithPath - Mojolicious Plugin
   # Mojolicious::Lite
   plugin 'ReverseProxyWithPath';
 
+  #location ~ ^/(?<app>[a-zA-z]+)(?<ruri>.*)$ {
+  #  if ( $ruri = "" ) {
+  #    set $ruri "/";
+  #  }
+  #  proxy_pass http://unix:/var/mojo/unixsockets/$app.$http_host:$ruri$is_args$args;
 =head1 DESCRIPTION
 
 L<Mojolicious::Plugin::ReverseProxyWithPath> is a L<Mojolicious> plugin.
@@ -79,5 +83,6 @@ Register plugin in L<Mojolicious> application.
 =head1 SEE ALSO
 
 L<Mojolicious>, L<Mojolicious::Guides>, L<https://mojolicious.org>.
+# https://mojolicious.io/blog/2019/03/18/reverse-proxy-with-path/
 
 =cut
